@@ -1,23 +1,62 @@
-import { useEffect, useRef, useState, useMemo } from "react";
-import { useAuth } from "@/_core/hooks/useAuth";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { trpc } from "@/lib/trpc";
-import { Link } from "wouter";
-import { 
-  Play, 
-  Pause, 
-  SkipForward, 
-  SkipBack, 
-  Star,
+import { Card } from "@/components/ui/card";
+import { Slider } from "@/components/ui/slider";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
+import {
+  ChevronLeft,
+  ChevronRight,
   Home,
+  Pause,
+  Play,
   Settings,
   Volume2,
   VolumeX,
 } from "lucide-react";
 import { createChart, IChartApi, ISeriesApi, CandlestickData, HistogramData, LineData, LineSeries, HistogramSeries, CandlestickSeries } from "lightweight-charts";
+import { Link } from "wouter";
+
+// モックデータ生成関数
+function generateMockData(days: number = 200) {
+  const data: CandlestickData[] = [];
+  const volumeData: HistogramData[] = [];
+  let basePrice = 1000 + Math.random() * 4000;
+  
+  for (let i = 0; i < days; i++) {
+    const date = new Date();
+    date.setDate(date.getDate() - (days - i));
+    const time = date.toISOString().split('T')[0] as any;
+    
+    const change = (Math.random() - 0.5) * basePrice * 0.05;
+    basePrice = Math.max(100, basePrice + change);
+    
+    const open = basePrice;
+    const close = basePrice + (Math.random() - 0.5) * basePrice * 0.03;
+    const high = Math.max(open, close) + Math.random() * basePrice * 0.02;
+    const low = Math.min(open, close) - Math.random() * basePrice * 0.02;
+    
+    data.push({ time, open, high, low, close });
+    volumeData.push({
+      time,
+      value: Math.floor(Math.random() * 10000000) + 1000000,
+      color: close >= open ? "#10b98180" : "#ef444480",
+    });
+  }
+  
+  return { data, volumeData };
+}
+
+// モック銘柄リスト
+const mockStocks = [
+  { code: "7203", name: "トヨタ自動車", market: "東証プライム", industry: "輸送用機器" },
+  { code: "9984", name: "ソフトバンクグループ", market: "東証プライム", industry: "情報・通信業" },
+  { code: "6758", name: "ソニーグループ", market: "東証プライム", industry: "電気機器" },
+  { code: "9983", name: "ファーストリテイリング", market: "東証プライム", industry: "小売業" },
+  { code: "8306", name: "三菱UFJフィナンシャル・グループ", market: "東証プライム", industry: "銀行業" },
+];
 
 export default function Player() {
-  const { user, isAuthenticated } = useAuth();
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candlestickSeriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
@@ -28,49 +67,32 @@ export default function Player() {
 
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [playbackSpeed, setPlaybackSpeed] = useState(1000);
+  const [speed, setSpeed] = useState(1.0);
   const [showVolume, setShowVolume] = useState(true);
+  const [showSMA, setShowSMA] = useState(true);
+  const [sma1Period, setSma1Period] = useState(5);
+  const [sma2Period, setSma2Period] = useState(25);
+  const [sma3Period, setSma3Period] = useState(75);
+  const [logScale, setLogScale] = useState(false);
 
-  const { data: universe = [] } = trpc.jquants.getUniverse.useQuery();
-  const { data: settings } = trpc.settings.get.useQuery(undefined, {
-    enabled: isAuthenticated,
-  });
-  const { data: favorites = [] } = trpc.favorites.list.useQuery(undefined, {
-    enabled: isAuthenticated,
-  });
+  const currentStock = mockStocks[currentIndex];
 
-  const currentSymbol = universe[currentIndex];
-  const { data: candles = [] } = trpc.jquants.getCandles.useQuery(
-    { code: currentSymbol?.code || "" },
-    { enabled: !!currentSymbol }
-  );
-
-  const addFavorite = trpc.favorites.add.useMutation();
-  const removeFavorite = trpc.favorites.remove.useMutation();
-  const utils = trpc.useUtils();
-
-  const isFavorite = useMemo(() => {
-    return favorites.some(f => f.code === currentSymbol?.code);
-  }, [favorites, currentSymbol]);
-
-  // チャート初期化
   useEffect(() => {
     if (!chartContainerRef.current) return;
 
-    const chart = createChart(chartContainerRef.current, {
+    const chart = chartRef.current || createChart(chartContainerRef.current, {
       layout: {
-        background: { color: "transparent" },
+        background: { color: "#0a0a0a" },
         textColor: "#d1d5db",
       },
       grid: {
-        vertLines: { color: "#374151" },
-        horzLines: { color: "#374151" },
+        vertLines: { color: "#1f2937" },
+        horzLines: { color: "#1f2937" },
       },
       width: chartContainerRef.current.clientWidth,
       height: 500,
-      timeScale: {
-        timeVisible: true,
-        secondsVisible: false,
+      rightPriceScale: {
+        mode: logScale ? 1 : 0,
       },
     });
 
@@ -130,154 +152,83 @@ export default function Player() {
     return () => {
       window.removeEventListener("resize", handleResize);
       chart.remove();
+      chartRef.current = null;
     };
   }, []);
 
-  // チャートデータ更新
   useEffect(() => {
-    if (!candles.length || !candlestickSeriesRef.current) return;
+    if (!candlestickSeriesRef.current || !volumeSeriesRef.current) return;
 
-    const candleData: CandlestickData[] = candles.map((c: any) => ({
-      time: c.date,
-      open: c.open,
-      high: c.high,
-      low: c.low,
-      close: c.close,
-    }));
+    const { data, volumeData } = generateMockData();
+    candlestickSeriesRef.current.setData(data);
+    volumeSeriesRef.current.setData(volumeData);
 
-    const volumeData: HistogramData[] = candles.map((c: any) => ({
-      time: c.date,
-      value: c.volume,
-      color: c.close >= c.open ? "#10b98180" : "#ef444480",
-    }));
-
-    candlestickSeriesRef.current.setData(candleData);
-    if (volumeSeriesRef.current && showVolume) {
-      volumeSeriesRef.current.setData(volumeData);
+    if (showSMA && sma1SeriesRef.current && sma2SeriesRef.current && sma3SeriesRef.current) {
+      const sma1Data = calculateSMA(data, sma1Period);
+      const sma2Data = calculateSMA(data, sma2Period);
+      const sma3Data = calculateSMA(data, sma3Period);
+      
+      sma1SeriesRef.current.setData(sma1Data);
+      sma2SeriesRef.current.setData(sma2Data);
+      sma3SeriesRef.current.setData(sma3Data);
     }
+  }, [currentIndex, showSMA, sma1Period, sma2Period, sma3Period]);
 
-    // SMA計算
-    const sma1Period = settings?.sma1 || 5;
-    const sma2Period = settings?.sma2 || 25;
-    const sma3Period = settings?.sma3 || 75;
-
-    const calculateSMA = (data: any[], period: number) => {
-      const result = [];
-      for (let i = period - 1; i < data.length; i++) {
-        const sum = data.slice(i - period + 1, i + 1).reduce((acc, val) => acc + val.close, 0);
-        result.push({
-          time: data[i].date,
-          value: sum / period,
-        });
-      }
-      return result;
-    };
-
-    if (sma1SeriesRef.current) {
-      sma1SeriesRef.current.setData(calculateSMA(candles, sma1Period));
+  useEffect(() => {
+    if (volumeSeriesRef.current) {
+      volumeSeriesRef.current.applyOptions({
+        visible: showVolume,
+      });
     }
-    if (sma2SeriesRef.current) {
-      sma2SeriesRef.current.setData(calculateSMA(candles, sma2Period));
-    }
-    if (sma3SeriesRef.current) {
-      sma3SeriesRef.current.setData(calculateSMA(candles, sma3Period));
-    }
+  }, [showVolume]);
 
-    chartRef.current?.timeScale().fitContent();
-  }, [candles, showVolume, settings]);
+  useEffect(() => {
+    if (chartRef.current) {
+      chartRef.current.applyOptions({
+        rightPriceScale: {
+          mode: logScale ? 1 : 0,
+        },
+      });
+    }
+  }, [logScale]);
 
-  // 自動再生
   useEffect(() => {
     if (!isPlaying) return;
 
     const interval = setInterval(() => {
-      setCurrentIndex((prev) => {
-        if (prev >= universe.length - 1) {
-          setIsPlaying(false);
-          return prev;
-        }
-        return prev + 1;
-      });
-    }, playbackSpeed);
+      setCurrentIndex((prev) => (prev + 1) % mockStocks.length);
+    }, speed * 1000);
 
     return () => clearInterval(interval);
-  }, [isPlaying, playbackSpeed, universe.length]);
+  }, [isPlaying, speed]);
 
-  // キーボードショートカット
-  useEffect(() => {
-    const handleKeyPress = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement) return;
-
-      switch (e.key) {
-        case " ":
-          e.preventDefault();
-          setIsPlaying((prev) => !prev);
-          break;
-        case "ArrowRight":
-          e.preventDefault();
-          setCurrentIndex((prev) => Math.min(prev + 1, universe.length - 1));
-          break;
-        case "ArrowLeft":
-          e.preventDefault();
-          setCurrentIndex((prev) => Math.max(prev - 1, 0));
-          break;
-        case "ArrowUp":
-          e.preventDefault();
-          setPlaybackSpeed((prev) => Math.max(prev - 200, 200));
-          break;
-        case "ArrowDown":
-          e.preventDefault();
-          setPlaybackSpeed((prev) => Math.min(prev + 200, 3000));
-          break;
-        case "v":
-        case "V":
-          e.preventDefault();
-          setShowVolume((prev) => !prev);
-          break;
-        case "*":
-          e.preventDefault();
-          handleToggleFavorite();
-          break;
+  const calculateSMA = (data: CandlestickData[], period: number) => {
+    const smaData: LineData[] = [];
+    for (let i = period - 1; i < data.length; i++) {
+      let sum = 0;
+      for (let j = 0; j < period; j++) {
+        sum += data[i - j].close;
       }
-    };
-
-    window.addEventListener("keydown", handleKeyPress);
-    return () => window.removeEventListener("keydown", handleKeyPress);
-  }, [universe.length, isFavorite, currentSymbol]);
-
-  const handleToggleFavorite = async () => {
-    if (!currentSymbol || !isAuthenticated) return;
-
-    if (isFavorite) {
-      await removeFavorite.mutateAsync({ code: currentSymbol.code });
-    } else {
-      await addFavorite.mutateAsync({
-        code: currentSymbol.code,
-        name: currentSymbol.name,
-        market: currentSymbol.market,
-        industry: currentSymbol.industry,
+      smaData.push({
+        time: data[i].time,
+        value: sum / period,
       });
     }
-    utils.favorites.list.invalidate();
+    return smaData;
   };
 
-  if (!isAuthenticated) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="text-center">
-          <p className="text-lg mb-4">ログインが必要です</p>
-          <Link href="/">
-            <Button>ホームに戻る</Button>
-          </Link>
-        </div>
-      </div>
-    );
-  }
+  const handlePrevious = () => {
+    setCurrentIndex((prev) => (prev - 1 + mockStocks.length) % mockStocks.length);
+  };
+
+  const handleNext = () => {
+    setCurrentIndex((prev) => (prev + 1) % mockStocks.length);
+  };
 
   return (
     <div className="min-h-screen flex flex-col bg-background">
       <header className="border-b border-border">
-        <div className="container py-3 flex items-center justify-between">
+        <div className="container py-4 flex items-center justify-between">
           <div className="flex items-center gap-4">
             <Link href="/">
               <Button variant="ghost" size="sm">
@@ -285,98 +236,133 @@ export default function Player() {
               </Button>
             </Link>
             <div>
-              <h2 className="text-lg font-semibold">
-                {currentSymbol?.code} - {currentSymbol?.name}
-              </h2>
+              <h1 className="text-xl font-bold">
+                {currentStock.code} - {currentStock.name}
+              </h1>
               <p className="text-sm text-muted-foreground">
-                {currentSymbol?.market} / {currentSymbol?.industry}
+                {currentStock.market} / {currentStock.industry}
               </p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            <Button
-              variant={isFavorite ? "default" : "outline"}
-              size="sm"
-              onClick={handleToggleFavorite}
-            >
-              <Star className={`w-4 h-4 ${isFavorite ? "fill-current" : ""}`} />
-            </Button>
-            <Link href="/favorites">
-              <Button variant="outline" size="sm">
-                お気に入り
-              </Button>
-            </Link>
+          <div className="text-sm text-muted-foreground">
+            {currentIndex + 1} / {mockStocks.length}
           </div>
         </div>
       </header>
 
       <main className="flex-1 p-4">
         <div className="container max-w-7xl">
-          <div ref={chartContainerRef} className="mb-4 rounded-lg border border-border" />
+          <div ref={chartContainerRef} className="mb-4 rounded-lg overflow-hidden border border-border" />
 
-          <div className="flex items-center justify-between gap-4 p-4 rounded-lg border border-border bg-card">
-            <div className="flex items-center gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setCurrentIndex((prev) => Math.max(prev - 1, 0))}
-                disabled={currentIndex === 0}
-              >
-                <SkipBack className="w-4 h-4" />
-              </Button>
-              <Button
-                variant={isPlaying ? "secondary" : "default"}
-                size="sm"
-                onClick={() => setIsPlaying((prev) => !prev)}
-              >
-                {isPlaying ? (
-                  <Pause className="w-4 h-4" />
-                ) : (
-                  <Play className="w-4 h-4" />
-                )}
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setCurrentIndex((prev) => Math.min(prev + 1, universe.length - 1))}
-                disabled={currentIndex === universe.length - 1}
-              >
-                <SkipForward className="w-4 h-4" />
-              </Button>
-            </div>
-
-            <div className="flex items-center gap-4">
-              <div className="text-sm">
-                {currentIndex + 1} / {universe.length}
-              </div>
-              <div className="text-sm">
-                速度: {(playbackSpeed / 1000).toFixed(1)}秒
-              </div>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setShowVolume((prev) => !prev)}
-              >
-                {showVolume ? (
-                  <Volume2 className="w-4 h-4" />
-                ) : (
-                  <VolumeX className="w-4 h-4" />
-                )}
-              </Button>
-            </div>
+          <div className="flex items-center justify-center gap-4 mb-6">
+            <Button variant="outline" size="icon" onClick={handlePrevious}>
+              <ChevronLeft className="w-4 h-4" />
+            </Button>
+            <Button
+              variant="default"
+              size="icon"
+              onClick={() => setIsPlaying(!isPlaying)}
+            >
+              {isPlaying ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
+            </Button>
+            <Button variant="outline" size="icon" onClick={handleNext}>
+              <ChevronRight className="w-4 h-4" />
+            </Button>
           </div>
 
-          <div className="mt-4 p-4 rounded-lg border border-border bg-card">
-            <h3 className="text-sm font-semibold mb-2">キーボードショートカット</h3>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs text-muted-foreground">
-              <div><kbd className="px-1 py-0.5 bg-muted rounded">Space</kbd> 再生/停止</div>
-              <div><kbd className="px-1 py-0.5 bg-muted rounded">→</kbd> 次へ</div>
-              <div><kbd className="px-1 py-0.5 bg-muted rounded">←</kbd> 前へ</div>
-              <div><kbd className="px-1 py-0.5 bg-muted rounded">↑/↓</kbd> 速度調整</div>
-              <div><kbd className="px-1 py-0.5 bg-muted rounded">V</kbd> 出来高表示</div>
-              <div><kbd className="px-1 py-0.5 bg-muted rounded">*</kbd> お気に入り</div>
+          <Card className="p-6">
+            <div className="flex items-center gap-2 mb-4">
+              <Settings className="w-5 h-5" />
+              <h2 className="text-lg font-semibold">設定</h2>
             </div>
-          </div>
+
+            <div className="space-y-6">
+              <div>
+                <Label className="mb-2 block">
+                  再生速度: {speed.toFixed(1)}秒/銘柄
+                </Label>
+                <Slider
+                  value={[speed]}
+                  onValueChange={(v) => setSpeed(v[0])}
+                  min={0.2}
+                  max={3.0}
+                  step={0.1}
+                  className="w-full"
+                />
+              </div>
+
+              <div className="flex items-center justify-between">
+                <Label htmlFor="volume-toggle" className="flex items-center gap-2">
+                  {showVolume ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
+                  出来高表示
+                </Label>
+                <Switch
+                  id="volume-toggle"
+                  checked={showVolume}
+                  onCheckedChange={setShowVolume}
+                />
+              </div>
+
+              <div className="flex items-center justify-between">
+                <Label htmlFor="sma-toggle">移動平均線表示</Label>
+                <Switch
+                  id="sma-toggle"
+                  checked={showSMA}
+                  onCheckedChange={setShowSMA}
+                />
+              </div>
+
+              {showSMA && (
+                <div className="space-y-4 pl-4 border-l-2 border-border">
+                  <div>
+                    <Label className="mb-2 block text-amber-500">
+                      SMA1: {sma1Period}日
+                    </Label>
+                    <Slider
+                      value={[sma1Period]}
+                      onValueChange={(v) => setSma1Period(v[0])}
+                      min={3}
+                      max={50}
+                      step={1}
+                    />
+                  </div>
+                  <div>
+                    <Label className="mb-2 block text-blue-500">
+                      SMA2: {sma2Period}日
+                    </Label>
+                    <Slider
+                      value={[sma2Period]}
+                      onValueChange={(v) => setSma2Period(v[0])}
+                      min={10}
+                      max={100}
+                      step={1}
+                    />
+                  </div>
+                  <div>
+                    <Label className="mb-2 block text-purple-500">
+                      SMA3: {sma3Period}日
+                    </Label>
+                    <Slider
+                      value={[sma3Period]}
+                      onValueChange={(v) => setSma3Period(v[0])}
+                      min={20}
+                      max={200}
+                      step={1}
+                    />
+                  </div>
+                </div>
+              )}
+
+              <div className="flex items-center justify-between">
+                <Label htmlFor="log-scale">対数スケール</Label>
+                <Switch
+                  id="log-scale"
+                  checked={logScale}
+                  onCheckedChange={setLogScale}
+                />
+              </div>
+            </div>
+          </Card>
         </div>
       </main>
     </div>
