@@ -1,6 +1,6 @@
-import { eq } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
-import { InsertUser, users } from "../drizzle/schema";
+import { InsertUser, users, favorites, InsertFavorite, userSettings, InsertUserSetting } from "../drizzle/schema";
 import { ENV } from './_core/env';
 
 let _db: ReturnType<typeof drizzle> | null = null;
@@ -85,4 +85,57 @@ export async function getUser(id: string) {
   return result.length > 0 ? result[0] : undefined;
 }
 
-// TODO: add feature queries here as your schema grows.
+// お気に入り関連
+export async function getUserFavorites(userId: string) {
+  const db = await getDb();
+  if (!db) return [];
+  
+  return await db.select().from(favorites).where(eq(favorites.userId, userId));
+}
+
+export async function addFavorite(favorite: InsertFavorite) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  
+  await db.insert(favorites).values(favorite);
+}
+
+export async function removeFavorite(userId: string, code: string) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  
+  await db.delete(favorites).where(
+    and(
+      eq(favorites.userId, userId),
+      eq(favorites.code, code)
+    )
+  );
+}
+
+// ユーザー設定関連
+export async function getUserSettings(userId: string) {
+  const db = await getDb();
+  if (!db) return null;
+  
+  const result = await db.select().from(userSettings).where(eq(userSettings.userId, userId)).limit(1);
+  return result.length > 0 ? result[0] : null;
+}
+
+export async function upsertUserSettings(settings: InsertUserSetting) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  
+  await db.insert(userSettings).values(settings).onDuplicateKeyUpdate({
+    set: {
+      sma1: settings.sma1,
+      sma2: settings.sma2,
+      sma3: settings.sma3,
+      playbackSpeed: settings.playbackSpeed,
+      showVolume: settings.showVolume,
+      logScale: settings.logScale,
+      theme: settings.theme,
+      updatedAt: new Date(),
+    },
+  });
+}
+
